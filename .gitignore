@@ -1,0 +1,62 @@
+# Database files
+*/*.db
+
+# Dependency directories (Node)
+*/node_modules/
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+coverage/
+htmlcov/
+
+# Environment files
+*.env
+.env.*
+*/backend/.env
+
+# Storage (generated / uploaded files)
+storage/temp/
+storage/uploads/
+
+# Frontend build outputs
+dist/
+build/
+.vite/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+*.tmp
+tmp/
+temp/
+*~
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Docker / compose overrides and local config
+docker-compose.override.yml
