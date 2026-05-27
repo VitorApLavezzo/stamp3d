@@ -28,8 +28,7 @@ htmlcov/
 */backend/.env
 
 # Storage (generated / uploaded files)
-storage/temp/
-storage/uploads/
+storage/
 
 # Frontend build outputs
 dist/
