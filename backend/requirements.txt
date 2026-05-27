@@ -1,0 +1,48 @@
+# Stamp3D - Backend Dependencies
+# Python 3.10+
+
+# ── Framework ──────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+
+# ── Configuração ───────────────────────────────────────────────────────────
+pydantic-settings==2.3.4
+
+# ── Banco de Dados ─────────────────────────────────────────────────────────
+sqlalchemy[asyncio]==2.0.31
+aiosqlite==0.20.0               # SQLite async (desenvolvimento)
+asyncpg==0.29.0                 # PostgreSQL async (produção)
+# psycopg2-binary==2.9.9        # PostgreSQL sync (alternativa)
+
+# ── Processamento de Imagem ────────────────────────────────────────────────
+opencv-python-headless==4.10.0.84
+Pillow==10.4.0
+numpy==1.26.4
+rembg[gpu]==2.0.57              # Remoção de fundo (usa onnxruntime)
+# rembg==2.0.57                 # Versão sem GPU se necessário
+
+# ── Vetorização ────────────────────────────────────────────────────────────
+# potrace: instalar via apt/brew (não pip)
+# apt-get install potrace
+# brew install potrace
+svgpathtools==1.6.1            # Manipulação de paths SVG
+
+# ── Geração 3D ─────────────────────────────────────────────────────────────
+trimesh==4.4.1                 # Malhas 3D
+numpy-stl==3.1.1               # Leitura/escrita STL
+# cadquery==2.4.0              # CAD paramétrico (opcional, requer conda)
+# openscad-py==0.1.0           # Interface Python para OpenSCAD
+
+# ── Conversão SVG → PNG (para pipeline 3D) ─────────────────────────────────
+cairosvg==2.7.1                # SVG para PNG/PDF
+# wand==0.6.13                 # Alternativa via ImageMagick
+
+# ── Utilitários ────────────────────────────────────────────────────────────
+aiofiles==23.2.1               # I/O assíncrono de arquivos
+python-dotenv==1.0.1           # Variáveis de ambiente
+
+# ── Opcional: Fila de Processamento ────────────────────────────────────────
+# celery==5.4.0
+# redis==5.0.7
+# flower==2.0.1                # Monitor do Celery
