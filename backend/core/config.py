@@ -29,19 +29,24 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""       # OpenAI GPT-4 Vision
     ANTHROPIC_API_KEY: str = ""    # Anthropic Claude Vision
 
-    # Parâmetros do carimbo
+    # Processamento de imagem
+    IMAGE_SIZE: int = 1024
+    MIN_LINE_WIDTH_MM: float = 1.2
+ 
+    # Parâmetros padrão do carimbo (replicando fluxo Blender)
     STAMP_BASE_HEIGHT: float = 4.0
     STAMP_RELIEF_HEIGHT: float = 6.0
-    STAMP_DIAMETER: float = 50.0
+    STAMP_DIAMETER: float = 21.0       # mm — diâmetro real (210 * scale 0.1)
     STAMP_SCALE_X: float = 0.1
     STAMP_SCALE_Y: float = 0.1
     STAMP_SCALE_Z: float = 0.2
     STAMP_LOCATION_Z: float = 15.0
-    MIN_LINE_WIDTH_MM: float = 1.2
-    IMAGE_SIZE: int = 1024
+ 
+    # Impressão FDM / alimentício
     MIN_WALL_THICKNESS: float = 1.2
     MIN_DETAIL_DISTANCE: float = 0.8
     LAYER_HEIGHT: float = 0.2
+
 
     REDIS_URL: str = "redis://localhost:6379/0"
     USE_CELERY: bool = False

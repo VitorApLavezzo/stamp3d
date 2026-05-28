@@ -1,61 +1,52 @@
 /**
- * Preview 3D do STL usando Three.js puro (sem @react-three/fiber)
+ * Preview 3D com Three.js puro - controles orbitais completos
  */
-
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { Maximize2, RotateCcw } from 'lucide-react'
 import clsx from 'clsx'
 
-// ── STL PARSER ────────────────────────────────────────────────────────────
 function parseSTL(buffer: ArrayBuffer): THREE.BufferGeometry {
-  const geometry = new THREE.BufferGeometry()
+  const geo = new THREE.BufferGeometry()
   const view = new DataView(buffer)
-
-  // Detectar ASCII vs binário
   const header = new Uint8Array(buffer, 0, 5)
-  const isBinary = !(header[0] === 115 && header[1] === 111 && header[2] === 108 && header[3] === 105 && header[4] === 100)
+  const isASCII = String.fromCharCode(...header) === 'solid'
+  const verts: number[] = [], normals: number[] = []
 
-  const vertices: number[] = []
-  const normals: number[] = []
-
-  if (isBinary) {
-    const triangleCount = view.getUint32(80, true)
-    for (let i = 0; i < triangleCount; i++) {
-      const offset = 84 + i * 50
-      const nx = view.getFloat32(offset, true)
-      const ny = view.getFloat32(offset + 4, true)
-      const nz = view.getFloat32(offset + 8, true)
+  if (!isASCII) {
+    const n = view.getUint32(80, true)
+    for (let i = 0; i < n; i++) {
+      const o = 84 + i * 50
+      const nx = view.getFloat32(o, true)
+      const ny = view.getFloat32(o + 4, true)
+      const nz = view.getFloat32(o + 8, true)
       for (let v = 0; v < 3; v++) {
-        const vo = offset + 12 + v * 12
-        vertices.push(view.getFloat32(vo, true), view.getFloat32(vo + 4, true), view.getFloat32(vo + 8, true))
+        const vo = o + 12 + v * 12
+        verts.push(view.getFloat32(vo, true), view.getFloat32(vo + 4, true), view.getFloat32(vo + 8, true))
         normals.push(nx, ny, nz)
       }
     }
   } else {
     const text = new TextDecoder().decode(buffer)
-    const vertexRe = /vertex\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)/g
-    const normalRe = /facet normal\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)/g
-    let vm, nm
+    const vr = /vertex\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)/g
+    const nr = /facet normal\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)/g
     const ns: number[][] = []
-    while ((nm = normalRe.exec(text)) !== null)
-      ns.push([parseFloat(nm[1]), parseFloat(nm[2]), parseFloat(nm[3])])
+    let m: RegExpExecArray | null
+    while ((m = nr.exec(text)) !== null) ns.push([+m[1], +m[2], +m[3]])
     let ti = 0
-    while ((vm = vertexRe.exec(text)) !== null) {
-      vertices.push(parseFloat(vm[1]), parseFloat(vm[2]), parseFloat(vm[3]))
+    while ((m = vr.exec(text)) !== null) {
+      verts.push(+m[1], +m[2], +m[3])
       const n = ns[Math.floor(ti / 3)] || [0, 0, 1]
       normals.push(n[0], n[1], n[2])
       ti++
     }
   }
 
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
-  geometry.computeBoundingBox()
-  return geometry
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geo.computeBoundingBox()
+  return geo
 }
 
-// ── COMPONENT ─────────────────────────────────────────────────────────────
 interface Preview3DProps {
   stlUrl?: string
   isProcessing?: boolean
@@ -64,211 +55,261 @@ interface Preview3DProps {
 
 export function Preview3D({ stlUrl, isProcessing = false, className }: Preview3DProps) {
   const mountRef = useRef<HTMLDivElement>(null)
-  const sceneRef = useRef<{
-    renderer: THREE.WebGLRenderer
-    scene: THREE.Scene
-    camera: THREE.PerspectiveCamera
-    mesh?: THREE.Mesh
-    animId: number
-    isDragging: boolean
-    lastMouse: { x: number; y: number }
-    rotX: number
-    rotZ: number
-    zoom: number
-  } | null>(null)
+  const stateRef = useRef<any>(null)
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
 
-  // Init Three.js scene
   useEffect(() => {
     const el = mountRef.current
     if (!el) return
 
-    const w = el.clientWidth || 600
-    const h = el.clientHeight || 400
+    const W = el.clientWidth || 600
+    const H = el.clientHeight || 400
 
-    // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-    renderer.setSize(w, h)
-    renderer.setPixelRatio(window.devicePixelRatio)
+    renderer.setSize(W, H)
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.shadowMap.enabled = true
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap
     el.appendChild(renderer.domElement)
 
-    // Scene
     const scene = new THREE.Scene()
+    const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 5000)
 
-    // Camera
-    const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 2000)
-    camera.position.set(0, -120, 80)
-    camera.lookAt(0, 0, 0)
-
-    // Lights
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5))
-    const dir = new THREE.DirectionalLight(0xffffff, 1.5)
-    dir.position.set(50, 50, 80)
+    // Luzes
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6))
+    const dir = new THREE.DirectionalLight(0xffffff, 1.2)
+    dir.position.set(60, 80, 60)
     dir.castShadow = true
     scene.add(dir)
-    const pt1 = new THREE.PointLight(0xf59e0b, 0.8, 300)
-    pt1.position.set(-40, -40, 40)
-    scene.add(pt1)
+    const pt = new THREE.PointLight(0xf59e0b, 0.5, 500)
+    pt.position.set(-40, 40, 40)
+    scene.add(pt)
 
     // Grid
-    const grid = new THREE.GridHelper(200, 20, 0xffffff, 0xffffff)
-    grid.material.opacity = 0.05
-    grid.material.transparent = true
-    grid.rotation.x = Math.PI / 2
+    const grid = new THREE.GridHelper(300, 30, 0x333344, 0x222233)
+    ;(grid.material as THREE.Material).opacity = 0.3
+    ;(grid.material as THREE.Material).transparent = true
     scene.add(grid)
 
-    // Placeholder cylinder (shown when no STL)
-    const cylGeo = new THREE.CylinderGeometry(25, 25, 4, 64)
-    cylGeo.rotateX(Math.PI / 2)
-    const cylMat = new THREE.MeshPhysicalMaterial({
-      color: 0xffffff, wireframe: true, opacity: 0.15, transparent: true
-    })
-    const placeholder = new THREE.Mesh(cylGeo, cylMat)
-    placeholder.position.z = 2
-    scene.add(placeholder)
+    // Placeholder
+    const ph = new THREE.Mesh(
+      new THREE.CylinderGeometry(20, 20, 5, 64),
+      new THREE.MeshPhysicalMaterial({ color: 0xffffff, wireframe: true, opacity: 0.15, transparent: true })
+    )
+    scene.add(ph)
 
-    const state = {
-      renderer, scene, camera,
+    // Estado orbital
+    const s = {
+      renderer, scene, camera, ph,
+      mesh: null as THREE.Mesh | null,
       animId: 0,
-      isDragging: false,
-      lastMouse: { x: 0, y: 0 },
-      rotX: 0.3,
-      rotZ: 0,
-      zoom: 1,
-      placeholder
+      theta: Math.PI / 4,
+      phi: Math.PI / 3,
+      radius: 200,
+      target: new THREE.Vector3(0, 25, 0),
+      drag: false,
+      button: 0,
+      mx: 0, my: 0,
     }
-    sceneRef.current = state as any
+    stateRef.current = s
 
-    // Animation loop
-    let autoRot = 0
+    const updateCam = () => {
+      s.camera.position.set(
+        s.target.x + s.radius * Math.sin(s.phi) * Math.sin(s.theta),
+        s.target.y + s.radius * Math.cos(s.phi),
+        s.target.z + s.radius * Math.sin(s.phi) * Math.cos(s.theta)
+      )
+      s.camera.lookAt(s.target)
+    }
+    updateCam()
+
+    let autoT = 0
     const animate = () => {
-      state.animId = requestAnimationFrame(animate)
-      if (!state.isDragging) {
-        autoRot += 0.005
-        placeholder.rotation.z = autoRot
-      }
-      const pivot = new THREE.Object3D()
-      camera.position.x = Math.sin(state.rotZ) * 120 * state.zoom
-      camera.position.y = -Math.cos(state.rotZ) * 120 * state.zoom
-      camera.position.z = 60 + state.rotX * 60
-      camera.lookAt(0, 0, 15)
+      s.animId = requestAnimationFrame(animate)
+      if (!s.mesh) { autoT += 0.008; ph.rotation.y = autoT }
       renderer.render(scene, camera)
     }
     animate()
 
-    // Mouse controls
-    const onMouseDown = (e: MouseEvent) => {
-      state.isDragging = true
-      state.lastMouse = { x: e.clientX, y: e.clientY }
+    // Mouse
+    const onDown = (e: MouseEvent) => {
+      s.drag = true; s.button = e.button; s.mx = e.clientX; s.my = e.clientY
+      e.preventDefault()
     }
-    const onMouseMove = (e: MouseEvent) => {
-      if (!state.isDragging) return
-      const dx = e.clientX - state.lastMouse.x
-      const dy = e.clientY - state.lastMouse.y
-      state.rotZ += dx * 0.01
-      state.rotX = Math.max(-1, Math.min(1, state.rotX - dy * 0.01))
-      state.lastMouse = { x: e.clientX, y: e.clientY }
+    const onMove = (e: MouseEvent) => {
+      if (!s.drag) return
+      const dx = e.clientX - s.mx, dy = e.clientY - s.my
+      s.mx = e.clientX; s.my = e.clientY
+      if (s.button === 0) {
+        s.theta -= dx * 0.01
+        s.phi = Math.max(0.05, Math.min(Math.PI - 0.05, s.phi - dy * 0.01))
+      } else {
+        const spd = s.radius * 0.001
+        const right = new THREE.Vector3().crossVectors(
+          s.camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)
+        ).normalize()
+        s.target.addScaledVector(right, -dx * spd)
+        s.target.y += dy * spd
+      }
+      updateCam()
     }
-    const onMouseUp = () => { state.isDragging = false }
+    const onUp = () => { s.drag = false }
     const onWheel = (e: WheelEvent) => {
-      state.zoom = Math.max(0.3, Math.min(3, state.zoom + e.deltaY * 0.001))
+      s.radius = Math.max(20, Math.min(1000, s.radius * (1 + e.deltaY * 0.001)))
+      updateCam()
+      e.preventDefault()
     }
-
-    el.addEventListener('mousedown', onMouseDown)
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
-    el.addEventListener('wheel', onWheel, { passive: true })
-
-    // Resize
+    const onCtx = (e: Event) => e.preventDefault()
     const onResize = () => {
       const w = el.clientWidth, h = el.clientHeight
-      camera.aspect = w / h
-      camera.updateProjectionMatrix()
+      camera.aspect = w / h; camera.updateProjectionMatrix()
       renderer.setSize(w, h)
     }
+
+    el.addEventListener('mousedown', onDown)
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    el.addEventListener('wheel', onWheel, { passive: false })
+    el.addEventListener('contextmenu', onCtx)
     window.addEventListener('resize', onResize)
 
+    // Touch
+    let lastDist = 0
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        s.drag = true; s.button = 0
+        s.mx = e.touches[0].clientX; s.my = e.touches[0].clientY
+      } else if (e.touches.length === 2) {
+        s.drag = false
+        lastDist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        )
+      }
+      e.preventDefault()
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 1 && s.drag) {
+        const dx = e.touches[0].clientX - s.mx, dy = e.touches[0].clientY - s.my
+        s.mx = e.touches[0].clientX; s.my = e.touches[0].clientY
+        s.theta -= dx * 0.01
+        s.phi = Math.max(0.05, Math.min(Math.PI - 0.05, s.phi - dy * 0.01))
+        updateCam()
+      } else if (e.touches.length === 2) {
+        const d = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        )
+        s.radius = Math.max(20, Math.min(1000, s.radius * (lastDist / d)))
+        lastDist = d
+        updateCam()
+      }
+      e.preventDefault()
+    }
+    const onTouchEnd = () => { s.drag = false }
+
+    el.addEventListener('touchstart', onTouchStart, { passive: false })
+    el.addEventListener('touchmove', onTouchMove, { passive: false })
+    el.addEventListener('touchend', onTouchEnd)
+
     return () => {
-      cancelAnimationFrame(state.animId)
-      el.removeEventListener('mousedown', onMouseDown)
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
+      cancelAnimationFrame(s.animId)
+      el.removeEventListener('mousedown', onDown)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
       el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('contextmenu', onCtx)
       window.removeEventListener('resize', onResize)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
+      el.removeEventListener('touchend', onTouchEnd)
       renderer.dispose()
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement)
-      sceneRef.current = null
+      stateRef.current = null
     }
   }, [])
 
-  // Load STL when URL changes
+  // Carregar STL
   useEffect(() => {
-    if (!stlUrl || !sceneRef.current) return
-    const state = sceneRef.current
-
-    setLoaded(false)
-    setError(false)
+    if (!stlUrl || !stateRef.current) return
+    const s = stateRef.current
+    setLoaded(false); setError(false)
 
     fetch(stlUrl)
       .then(r => r.arrayBuffer())
       .then(buf => {
-        if (!sceneRef.current) return
+        if (!stateRef.current) return
         const geo = parseSTL(buf)
-
-        // Center geometry
         geo.computeBoundingBox()
         const box = geo.boundingBox!
         const cx = (box.max.x + box.min.x) / 2
         const cy = (box.max.y + box.min.y) / 2
         geo.translate(-cx, -cy, -box.min.z)
+        // Z-up → Y-up
+        geo.rotateX(-Math.PI / 2)
+        geo.computeBoundingBox()
 
-        // Remove old mesh
-        if (state.mesh) {
-          state.scene.remove(state.mesh)
-          state.mesh.geometry.dispose()
-        }
+        if (s.mesh) { s.scene.remove(s.mesh); s.mesh.geometry.dispose() }
+        s.scene.remove(s.ph)
 
-        const mat = new THREE.MeshPhysicalMaterial({
-          color: 0xf59e0b,
-          metalness: 0.1,
-          roughness: 0.4,
-          clearcoat: 0.3,
-        })
-        const mesh = new THREE.Mesh(geo, mat)
+        const mesh = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({
+          color: 0xf59e0b, metalness: 0.05, roughness: 0.3, clearcoat: 0.4,
+        }))
         mesh.castShadow = true
-        state.scene.add(mesh)
-        state.mesh = mesh
+        s.scene.add(mesh)
+        s.mesh = mesh
+
+        // Ajustar câmera ao modelo
+        const size = geo.boundingBox!.getSize(new THREE.Vector3()).length()
+        s.radius = size * 1.4
+        s.target.set(0, size * 0.25, 0)
+        s.camera.position.set(
+          s.target.x + s.radius * Math.sin(s.phi) * Math.sin(s.theta),
+          s.target.y + s.radius * Math.cos(s.phi),
+          s.target.z + s.radius * Math.sin(s.phi) * Math.cos(s.theta)
+        )
+        s.camera.lookAt(s.target)
         setLoaded(true)
       })
       .catch(() => setError(true))
   }, [stlUrl])
 
   const handleReset = () => {
-    if (!sceneRef.current) return
-    sceneRef.current.rotX = 0.3
-    sceneRef.current.rotZ = 0
-    sceneRef.current.zoom = 1
+    const s = stateRef.current; if (!s) return
+    s.theta = Math.PI / 4; s.phi = Math.PI / 3
+    s.target.set(0, s.mesh ? s.radius * 0.2 : 25, 0)
+    s.camera.position.set(
+      s.target.x + s.radius * Math.sin(s.phi) * Math.sin(s.theta),
+      s.target.y + s.radius * Math.cos(s.phi),
+      s.target.z + s.radius * Math.sin(s.phi) * Math.cos(s.theta)
+    )
+    s.camera.lookAt(s.target)
   }
 
   return (
-    <div className={clsx('relative rounded-2xl overflow-hidden bg-[#080810] border border-white/8', className)}>
+    <div className={clsx('relative rounded-2xl overflow-hidden bg-[#080810] border border-white/8 select-none', className)}>
       <div ref={mountRef} className="w-full h-full" style={{ minHeight: 300 }} />
 
-      {/* Controls */}
-      <div className="absolute top-3 right-3 flex gap-1.5">
+      <div className="absolute top-3 right-3 flex flex-col gap-1.5">
+        <button onClick={handleReset}
+          className="w-7 h-7 rounded-lg bg-black/60 border border-white/10 flex items-center justify-center hover:bg-black/80 transition-colors text-white/60 text-xs"
+          title="Resetar câmera">⟳</button>
         <button
-          onClick={handleReset}
-          className="w-7 h-7 rounded-lg bg-black/50 border border-white/10 flex items-center justify-center hover:bg-black/70 transition-colors"
-          title="Resetar câmera"
-        >
-          <RotateCcw className="w-3.5 h-3.5 text-white/60" />
-        </button>
+          onClick={() => { const s = stateRef.current; if (s) { s.radius = Math.max(20, s.radius * 0.75); s.camera.position.set(s.target.x+s.radius*Math.sin(s.phi)*Math.sin(s.theta),s.target.y+s.radius*Math.cos(s.phi),s.target.z+s.radius*Math.sin(s.phi)*Math.cos(s.theta)); s.camera.lookAt(s.target) } }}
+          className="w-7 h-7 rounded-lg bg-black/60 border border-white/10 flex items-center justify-center hover:bg-black/80 transition-colors text-white/60 text-sm"
+          title="Zoom in">+</button>
+        <button
+          onClick={() => { const s = stateRef.current; if (s) { s.radius = Math.min(1000, s.radius * 1.33); s.camera.position.set(s.target.x+s.radius*Math.sin(s.phi)*Math.sin(s.theta),s.target.y+s.radius*Math.cos(s.phi),s.target.z+s.radius*Math.sin(s.phi)*Math.cos(s.theta)); s.camera.lookAt(s.target) } }}
+          className="w-7 h-7 rounded-lg bg-black/60 border border-white/10 flex items-center justify-center hover:bg-black/80 transition-colors text-white/60 text-sm"
+          title="Zoom out">−</button>
       </div>
 
-      {/* Status */}
+      {loaded && (
+        <div className="absolute bottom-3 left-3 pointer-events-none">
+          <p className="text-[10px] text-white/25">Esq: girar · Dir: mover · Scroll: zoom</p>
+        </div>
+      )}
+
       {!stlUrl && (
         <div className="absolute bottom-3 left-3 right-3 pointer-events-none">
           <div className="bg-black/60 backdrop-blur-sm rounded-xl px-3 py-2 border border-white/5 text-center">
@@ -276,12 +317,6 @@ export function Preview3D({ stlUrl, isProcessing = false, className }: Preview3D
               {isProcessing ? '⚙️ Gerando modelo 3D...' : '📦 Preview 3D aparecerá após o processamento'}
             </p>
           </div>
-        </div>
-      )}
-
-      {stlUrl && loaded && (
-        <div className="absolute bottom-3 left-3 pointer-events-none">
-          <p className="text-[10px] text-white/20">🖱 Arraste para girar · Scroll para zoom</p>
         </div>
       )}
 

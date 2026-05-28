@@ -33,7 +33,7 @@ async def download_stl(project_id: int, db: AsyncSession = Depends(get_db)):
     if not project.stl_path or not os.path.exists(project.stl_path):
         raise HTTPException(404, "Arquivo STL não encontrado")
     
-    filename = f"carimbo_{project.name.replace(' ', '_')}_{project_id}.stl"
+    filename = f"{project.name.replace(' ', '_')}.stl"
     
     return FileResponse(
         path=project.stl_path,

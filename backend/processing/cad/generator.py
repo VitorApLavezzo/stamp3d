@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class StampGenerator3D:
     def __init__(
         self,
-        diameter_mm: float = 50.0,
+        diameter_mm: float = 21.0,
         base_height_mm: float = 4.0,
         relief_height_mm: float = 6.0,
         scale_x: float = 0.1,
@@ -77,14 +77,14 @@ class StampGenerator3D:
         try:
             scad_path = output_path.replace(".stl", ".scad")
             abs_svg = os.path.abspath(svg_path).replace("\\", "/")
-            svg_scale = (self.diameter * 0.85) / 1000.0
+            svg_scale = self.diameter / 1000.0
             scad = f"""$fn=128;
 union() {{
     cylinder(h={self.base_height}, r={self.radius});
     translate([0,0,{self.base_height}])
     intersection() {{
-        cylinder(h={self.relief_height}, r={self.radius * 0.95});
-        translate([{-self.radius * 0.85},{-self.radius * 0.85},0])
+        cylinder(h={self.relief_height}, r={self.radius});
+        translate([{-self.radius},{-self.radius},0])
         scale([{svg_scale:.6f},{svg_scale:.6f},1])
         linear_extrude(height={self.relief_height})
         import("{abs_svg}");
@@ -183,8 +183,8 @@ union() {{
         # 1. Cabo com perfil ergonômico (de baixo para cima)
         tris += self._make_profile_solid(profile, z_cabo_bot, h_cabo, scale_r, segments=64)
 
-        # 2. Topo circular (base + área de relevo) em cima do cabo
-        tris += self._make_cylinder(r, z_topo_bot, z_topo_top, segments=128)
+        # 2. Base do topo (cilindro fechado — da base até a superfície de carimbar)
+        tris += self._make_cylinder(r, z_topo_bot, z_rel_bot, segments=128)
 
         update("Carregando e limpando máscara", 40)
         mask = self._load_mask(svg_path)
@@ -258,6 +258,23 @@ union() {{
 
     # ── Cilindro ──────────────────────────────────────────────────────────
 
+    def _make_cylinder_open_top(self, radius, z_bot, z_top, segments=64) -> List:
+        """Cilindro sem tampa superior — o relevo fecha o topo."""
+        tris = []
+        a = [2 * math.pi * i / segments for i in range(segments)]
+        cx = [math.cos(x) * radius for x in a]
+        cy = [math.sin(x) * radius for x in a]
+        for i in range(segments):
+            j = (i + 1) % segments
+            ax, ay = cx[i], cy[i]
+            bx, by = cx[j], cy[j]
+            # Tampa base apenas
+            tris.append(((0,0,z_bot), (bx,by,z_bot), (ax,ay,z_bot)))
+            # Paredes laterais
+            tris.append(((ax,ay,z_bot), (bx,by,z_bot), (bx,by,z_top)))
+            tris.append(((ax,ay,z_bot), (bx,by,z_top), (ax,ay,z_top)))
+        return tris
+
     def _make_cylinder(self, radius, z_bot, z_top, segments=64) -> List:
         tris = []
         a = [2 * math.pi * i / segments for i in range(segments)]
@@ -280,31 +297,40 @@ union() {{
 
         img = None
 
-        # Tentar imagem processada
-        basename = os.path.basename(svg_path)
-        parts = basename.split("_")
-        if len(parts) >= 2:
-            pid = parts[1]
-            temp_dir = os.path.dirname(svg_path).replace("exports", "temp")
-            proc_path = os.path.join(temp_dir, f"project_{pid}_processed.png")
-            if os.path.exists(proc_path):
-                img = cv2.imread(proc_path, cv2.IMREAD_UNCHANGED)
-                if img is not None:
-                    logger.info(f"  ✓ Máscara: {proc_path}")
+        # 1. Tentar cairosvg PRIMEIRO (mais confiável — usa o SVG direto)
+        try:
+            import cairosvg
+            png = cairosvg.svg2png(url=svg_path, output_width=512, output_height=512)
+            arr = np.frombuffer(png, dtype=np.uint8)
+            img_svg = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+            if img_svg is not None:
+                # Verificar se tem conteúdo real (não só fundo vazio)
+                if len(img_svg.shape) == 3 and img_svg.shape[2] == 4:
+                    alpha_pct = (img_svg[:,:,3] > 127).mean() * 100
+                    if 1 < alpha_pct < 90:
+                        img = img_svg
+                        logger.info(f"  ✓ Máscara via cairosvg ({alpha_pct:.1f}% alpha)")
+                elif img_svg is not None:
+                    img = img_svg
+                    logger.info("  ✓ Máscara via cairosvg (gray)")
+        except Exception as e:
+            logger.warning(f"  cairosvg falhou: {e}")
 
-        # Tentar cairosvg
+        # 2. Fallback: imagem processada (só se cairosvg falhou)
         if img is None:
-            try:
-                import cairosvg
-                png = cairosvg.svg2png(url=svg_path, output_width=512, output_height=512)
-                arr = np.frombuffer(png, dtype=np.uint8)
-                img = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
-                if img is not None:
-                    logger.info("  ✓ Máscara via cairosvg")
-            except Exception:
-                pass
+            basename = os.path.basename(svg_path)
+            parts = basename.split("_")
+            if len(parts) >= 2:
+                pid = parts[1]
+                temp_dir = os.path.dirname(svg_path).replace("exports", "temp")
+                proc_path = os.path.join(temp_dir, f"project_{pid}_processed.png")
+                if os.path.exists(proc_path):
+                    img = cv2.imread(proc_path, cv2.IMREAD_UNCHANGED)
+                    if img is not None:
+                        logger.info(f"  ✓ Máscara fallback: {proc_path}")
 
         if img is None:
+            logger.warning("  ⚠ Nenhuma máscara encontrada")
             return None
 
         return self._prepare_mask(img)
@@ -316,22 +342,24 @@ union() {{
         """
         import cv2
 
-        # Alta resolução para bordas suaves: 300x300
-        SIZE = 300
+        # Resolução alta para preservar detalhes finos: 500x500
+        # Cada pixel = ~0.088mm a 50mm de diâmetro
+        SIZE = 1500
 
-        # ── CASO 1: imagem RGBA (SVG rasterizado com canal alpha) ─────────
-        # O SVG do ChatGPT tem objeto em alpha=255, fundo em alpha=0
+        # ── CASO 1: imagem RGBA (SVG com canal alpha) ─────────────────────
+        # SVG do ChatGPT: objeto em alpha=255, fundo em alpha=0
+        # Canal alpha já é binário perfeito — SEM morfologia agressiva
         if len(img.shape) == 3 and img.shape[2] == 4:
             alpha_ch = img[:,:,3]
             alpha_resized = cv2.resize(alpha_ch, (SIZE, SIZE), interpolation=cv2.INTER_LANCZOS4)
-            # Objeto = onde tem alpha (> 0) → branco para extrudar
             _, binary = cv2.threshold(alpha_resized, 127, 255, cv2.THRESH_BINARY)
             obj_pct = (binary == 255).mean() * 100
-            import logging
-            logging.getLogger(__name__).info(f"  Máscara via alpha: {obj_pct:.1f}% objeto")
+            logger.info(f"  Máscara via alpha: {obj_pct:.1f}% objeto")
             if 2 < obj_pct < 80:
-                # Alpha válido — usar direto
-                pass
+                # SVG limpo — só fechar micro-falhas sem distorcer detalhes
+                k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+                binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, k2, iterations=1)
+                logger.info(f"  SVG alpha: morfologia mínima aplicada")
             else:
                 # Alpha inválido — cair no gray
                 img = img[:,:,:3]
@@ -382,10 +410,15 @@ union() {{
         k_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (min_px, min_px))
         binary = cv2.dilate(binary, k_dilate, iterations=1)
 
+        # Centralizar o desenho no canvas antes de mapear para o topo do carimbo.
+        # A extrusão usa o centro do canvas como origem; sem isso, SVGs com
+        # margem desigual ficam deslocados no topo.
+        binary = self._center_binary_mask(binary)
+
         # ── Máscara circular ─────────────────────────────────────────────
         cx, cy = SIZE // 2, SIZE // 2
         Y, X = np.ogrid[:SIZE, :SIZE]
-        circle = (X - cx)**2 + (Y - cy)**2 <= (SIZE * 0.44)**2
+        circle = (X - cx)**2 + (Y - cy)**2 <= (SIZE / 2)**2
         binary[~circle] = 0
 
         # ── Remover componentes pequenos (ruído residual) ─────────────────
@@ -403,6 +436,36 @@ union() {{
         logger.info(f"  ✓ Máscara {SIZE}x{SIZE}, cobertura: {mask.mean()*100:.1f}%")
         return mask
 
+    def _center_binary_mask(self, binary: np.ndarray) -> np.ndarray:
+        ys, xs = np.where(binary > 0)
+        if len(xs) == 0 or len(ys) == 0:
+            return binary
+
+        h, w = binary.shape[:2]
+        bbox_cx = (xs.min() + xs.max()) / 2
+        bbox_cy = (ys.min() + ys.max()) / 2
+        canvas_cx = (w - 1) / 2
+        canvas_cy = (h - 1) / 2
+        shift_x = int(round(canvas_cx - bbox_cx))
+        shift_y = int(round(canvas_cy - bbox_cy))
+
+        if shift_x == 0 and shift_y == 0:
+            return binary
+
+        centered = np.zeros_like(binary)
+        src_x0 = max(0, -shift_x)
+        src_y0 = max(0, -shift_y)
+        src_x1 = min(w, w - shift_x)
+        src_y1 = min(h, h - shift_y)
+        dst_x0 = max(0, shift_x)
+        dst_y0 = max(0, shift_y)
+        dst_x1 = dst_x0 + (src_x1 - src_x0)
+        dst_y1 = dst_y0 + (src_y1 - src_y0)
+
+        centered[dst_y0:dst_y1, dst_x0:dst_x1] = binary[src_y0:src_y1, src_x0:src_x1]
+        logger.info(f"  Máscara centralizada: dx={shift_x}px dy={shift_y}px")
+        return centered
+
     # ── Extrusão binária otimizada ────────────────────────────────────────
 
     def _extrude_mask(self, mask: np.ndarray) -> List:
@@ -417,7 +480,7 @@ union() {{
         tris = []
 
         # mm por pixel
-        scale = (self.diameter * 0.88) / SIZE
+        scale = self.diameter / SIZE
         # Usar offset dinâmico se definido (cabo + topo), senão usar padrão
         z_offset = getattr(self, '_relief_z_offset', self.base_height)
         z_base = z_offset
@@ -443,13 +506,12 @@ union() {{
 
                 x0, y0, x1, y1 = x0y0x1y1(r, c)
 
-                # Face superior
+                # Face superior (topo do relevo)
                 tris.append(((x0,y0,z_top),(x1,y0,z_top),(x1,y1,z_top)))
                 tris.append(((x0,y0,z_top),(x1,y1,z_top),(x0,y1,z_top)))
 
-                # Face inferior
-                tris.append(((x0,y0,z_base),(x1,y1,z_base),(x1,y0,z_base)))
-                tris.append(((x0,y0,z_base),(x0,y1,z_base),(x1,y1,z_base)))
+                # Face inferior APENAS na borda do relevo (não no interior)
+                # Isso evita a superfície plana visível dentro do topo aberto
 
                 # Paredes — usar padded (r+1, c+1 no sistema padded)
                 pr, pc = r + 1, c + 1
